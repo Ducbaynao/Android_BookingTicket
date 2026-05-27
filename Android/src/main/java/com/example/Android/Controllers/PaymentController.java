@@ -23,6 +23,11 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.Map;
 
+/**
+ * Controller xử lý tất cả các yêu cầu liên quan đến thanh toán.
+ * Tích hợp cổng thanh toán VNPay, hỗ trợ tạo URL thanh toán,
+ * tiếp nhận callback (Return URL) và Webhook (IPN URL) từ VNPay.
+ */
 @RestController
 @RequestMapping("/api/payment")
 @RequiredArgsConstructor
@@ -33,12 +38,21 @@ public class PaymentController {
     private final BookingService bookingService;
     private final UserService userService;
 
+    // URL deep link để điều hướng ngược lại ứng dụng di động sau khi thanh toán thành công
     @Value("${vnpay.APP_RETURN_URL:moviebooking://payment-result}")
     private String appReturnUrl;
 
+    // Tên gói Android của ứng dụng di động phục vụ việc tạo Android Intent URL
     @Value("${vnpay.APP_ANDROID_PACKAGE:com.moviebookingmobile}")
     private String appAndroidPackage;
 
+    /**
+     * API tạo liên kết thanh toán VNPay cho một đơn đặt vé cụ thể.
+     * 
+     * @param bookingId ID của đơn đặt vé cần thanh toán.
+     * @param request HttpServletRequest để lấy địa chỉ IP của client.
+     * @return ResponseEntity chứa URL thanh toán VNPay (Sandbox).
+     */
     @GetMapping("/pay")
     public ResponseEntity<?> createPayment(@RequestParam Long bookingId, HttpServletRequest request) {
         try {
@@ -52,32 +66,50 @@ public class PaymentController {
         }
     }
 
+    /**
+     * API Webhook (Instant Payment Notification - IPN) nhận kết quả thanh toán ẩn danh từ VNPay.
+     * VNPay gọi API này trực tiếp từ máy chủ của họ để cập nhật trạng thái đơn hàng một cách bảo mật.
+     * 
+     * @param params Bản đồ chứa tất cả tham số phản hồi từ VNPay.
+     * @return ResponseEntity trả về phản hồi chuẩn dạng JSON cho VNPay (ví dụ: RspCode=00).
+     */
     @GetMapping("/vnpIpn")
     public ResponseEntity<Map<String, String>> vnpIpn(@RequestParam Map<String, String> params) {
         log.info("VNPAY IPN: {}", params);
         return paymentService.handleVnpIpn(params);
     }
 
+    /**
+     * API Return URL tiếp nhận phản hồi điều hướng của người dùng sau khi hoàn thành giao dịch trên VNPay.
+     * Phân tích kết quả thanh toán, cập nhật trạng thái và xuất trang HTML tự động chuyển hướng về ứng dụng di động.
+     * 
+     * @param params Bản đồ chứa các tham số VNPay trả về trên URL.
+     * @param request HttpServletRequest để kiểm tra thông tin trình duyệt User-Agent.
+     * @return ResponseEntity dạng TEXT_HTML chứa giao diện thông báo kết quả và script chuyển hướng.
+     */
     @GetMapping("/vnpReturn")
     public ResponseEntity<String> vnpReturn(@RequestParam Map<String, String> params, HttpServletRequest request) {
         log.info("VNPAY RETURN: {}", params);
 
-        // Process payment BEFORE redirecting to app
+        // Thực hiện xử lý nghiệp vụ thanh toán (idempotent) trước khi điều hướng về App di động
         try {
             paymentService.handleVnpReturn(params);
         } catch (Exception e) {
             log.error("Error processing VNPay return: {}", e.getMessage());
         }
 
+        // Kiểm tra chữ ký bảo mật từ VNPay để đảm bảo dữ liệu không bị giả mạo
         boolean validSignature = paymentService.isValidReturnSignature(params);
         String bookingId = params.getOrDefault("vnp_TxnRef", "");
         String responseCode = params.getOrDefault("vnp_ResponseCode", "");
         String transactionStatus = params.getOrDefault("vnp_TransactionStatus", "");
 
+        // Mã phản hồi "00" biểu thị giao dịch thành công tại cổng VNPay
         boolean gatewaySuccess = "00".equals(responseCode)
                 && (transactionStatus.isBlank() || "00".equals(transactionStatus));
         boolean bookingConfirmed = false;
 
+        // Truy vấn lại cơ sở dữ liệu để xác nhận trạng thái đơn đặt vé đã được chuyển thành CONFIRMED
         try {
             Long bookingIdLong = Long.valueOf(bookingId);
             Booking booking = bookingService.getBookingById(bookingIdLong);
@@ -86,8 +118,10 @@ public class PaymentController {
             log.warn("Cannot verify booking {} status on VNPay return: {}", bookingId, ex.getMessage());
         }
 
+        // Đơn hàng thanh toán thành công hoàn tất khi chữ ký hợp lệ, cổng báo thành công và DB đã xác nhận
         boolean isSuccess = validSignature && gatewaySuccess && bookingConfirmed;
 
+        // Xây dựng Deep Link để truyền kết quả về ứng dụng di động React Native
         String appDeepLink = UriComponentsBuilder.fromUriString(appReturnUrl)
                 .queryParam("bookingId", bookingId)
                 .queryParam("vnp_ResponseCode", responseCode)
@@ -97,6 +131,7 @@ public class PaymentController {
                 .build(true)
                 .toUriString();
 
+        // Xây dựng Android Intent URL phục vụ việc mở lại App tự động trên môi trường Android Chrome
         String androidIntentUrl = UriComponentsBuilder
                 .fromUriString("intent://payment-result")
                 .queryParam("bookingId", bookingId)
@@ -117,6 +152,7 @@ public class PaymentController {
                 ? "Đơn hàng đã được xác nhận. Hệ thống sẽ chuyển bạn về ứng dụng để xem vé."
                 : "Không thể xác nhận thanh toán. Hệ thống sẽ chuyển bạn về ứng dụng để kiểm tra trạng thái vé.";
 
+        // Trả về trang HTML thông báo kết quả giao dịch vô cùng chuyên nghiệp và tự động mở deep link
         String html = """
                 <!doctype html>
                 <html lang="vi">
@@ -185,6 +221,14 @@ public class PaymentController {
                 .body(html);
     }
 
+    /**
+     * API kiểm tra trạng thái thanh toán hiện tại của một đơn đặt vé.
+     * Yêu cầu xác thực người dùng và đảm bảo người dùng chỉ xem được trạng thái đơn hàng của chính mình.
+     * 
+     * @param bookingId ID của đơn đặt vé.
+     * @param authentication Đối tượng chứa thông tin người dùng đã xác thực.
+     * @return ResponseEntity chứa trạng thái thanh toán và thông tin giao dịch chi tiết.
+     */
     @GetMapping("/status")
     public ResponseEntity<?> getPaymentStatus(@RequestParam Long bookingId, Authentication authentication) {
         if (authentication == null || authentication.getName() == null) {
@@ -194,6 +238,7 @@ public class PaymentController {
         Booking booking = bookingService.getBookingById(bookingId);
         User currentUser = userService.findByEmail(authentication.getName());
 
+        // Kiểm tra quyền sở hữu đơn hàng để tránh rò rỉ dữ liệu (Broken Object Level Authorization)
         if (booking.getUser() == null || !booking.getUser().getId().equals(currentUser.getId())) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", "Forbidden"));
         }
@@ -201,7 +246,13 @@ public class PaymentController {
         return ResponseEntity.ok(paymentService.getPaymentStatus(bookingId));
     }
 
-    // ADMIN: Manually confirm payment for testing
+    /**
+     * API dành riêng cho quản trị viên (ADMIN) để kích hoạt thủ công kết quả thanh toán thành công.
+     * Hỗ trợ quá trình kiểm thử lập trình (Testing/Debugging) mà không cần quét QR VNPay thực tế.
+     * 
+     * @param bookingId ID đơn đặt vé cần kích hoạt thủ công.
+     * @return ResponseEntity thông báo kết quả kích hoạt.
+     */
     @PostMapping("/admin/confirm/{bookingId}")
     public ResponseEntity<?> manuallyConfirmPayment(@PathVariable Long bookingId) {
         try {
@@ -213,6 +264,9 @@ public class PaymentController {
         }
     }
 
+    /**
+     * Hàm phụ trợ chuyển đổi chuỗi Java thành ký tự an toàn khi chèn vào script JS của trang HTML.
+     */
     private String toJsStringLiteral(String value) {
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'";
     }
