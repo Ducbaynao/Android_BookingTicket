@@ -1,0 +1,2 @@
+// This directory contains reusable UI components for the MovieBooking app
+// Components include: LoadingSpinner, SkeletonLoader, ErrorBoundary, etc.

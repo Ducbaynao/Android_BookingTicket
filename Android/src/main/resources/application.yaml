@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: Android
+  datasource:
+    url: jdbc:mysql://localhost:3306/movie_booking_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=utf8
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  security:
+   jwt :
+    secret: YcZzk5ad3R46VbuvCbEyQvshnZPEUOOGvXn4P5xAV2o
+    expiration: 3600000      
+
+  rabbitmq:
+      host: localhost
+      port: 5672
+      username: guest
+      password: guest
+      listener:
+        simple:
+          auto-startup: true
+
+server: 
+  port: 8080
+
+vnpay:
+  VNP_TMNCODE:  971INICI
+  VNP_HASH_SECRET:  ARBW4DV3CC7J0LO5UE3VRBGFHBWCBTBW
+  VNP_URL: https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
+  VNP_RETURN_URL:  https://reminiscent-madie-unequable.ngrok-free.dev/api/payment/vnpReturn
+  VNP_IPN_URL: https://reminiscent-madie-unequable.ngrok-free.dev/api/payment/vnpIpn
+  APP_RETURN_URL: moviebooking://payment-result
+  APP_ANDROID_PACKAGE: com.moviebookingmobile
+
+booking:
+  hold-timeout-minutes: 15
+  expiration-check-interval-ms: 15000
